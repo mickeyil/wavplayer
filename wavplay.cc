@@ -2,6 +2,7 @@
 // install packages (Ubuntu 16.04):
 // $ sudo apt-get install libsndfile1-dev libsoundio-dev
 
+#include <algorithm>
 #include <soundio/soundio.h>
 
 #include <stdio.h>
@@ -37,6 +38,7 @@ static void write_callback(struct SoundIoOutStream *outstream,
     const struct SoundIoChannelLayout *layout = &outstream->layout;
     struct SoundIoChannelArea *areas;
     int frames_left = frame_count_max;
+    frames_left = std::min(frames_left, 800);
     int err;
 
     while (frames_left > 0) {
