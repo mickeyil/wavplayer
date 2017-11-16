@@ -1,6 +1,6 @@
 // build with: g++ -Wall -o wp6 wp6.cc -lsoundio -lsndfile
 // install packages (Ubuntu 16.04):
-// $ sudo apt-get install libsndfile1-dev libsoundio-dev
+// $ sudo apt-get install libsndfile1-dev libsoundio-dev libasound2-dev
 
 #include <algorithm>
 #include <soundio/soundio.h>
@@ -11,6 +11,14 @@
 #include <math.h>
 
 #include	<sndfile.hh>
+
+// this argument controls the number of frames that are copied each time
+// the write callback function is called.
+// larger number copies more frames thus creates more robustness against
+// operating system caused delays, but gives less certainty on the exact
+// play time. Smaller number increases the certainty at the expense of
+// risking exposure to buffer underrun.
+static const int MAX_FRAMES_QUANTA = 800;
 
 
 // This pointer holds the buffer which will contain the whole
@@ -28,6 +36,8 @@ short *buffer = NULL;
 // global position uint16 pointer
 size_t pos = 0;
 
+size_t buf_size = 0;
+
 SndfileHandle file;
 
 
@@ -38,8 +48,15 @@ static void write_callback(struct SoundIoOutStream *outstream,
     const struct SoundIoChannelLayout *layout = &outstream->layout;
     struct SoundIoChannelArea *areas;
     int frames_left = frame_count_max;
-    frames_left = std::min(frames_left, 800);
+    frames_left = std::min(frames_left, MAX_FRAMES_QUANTA);
     int err;
+
+    int channels = layout->channel_count;
+
+    if (pos + channels * frames_left > buf_size) {
+      printf("LOOP!");
+      pos = 0;
+    }
 
     while (frames_left > 0) {
         int frame_count = frames_left;
@@ -53,7 +70,7 @@ static void write_callback(struct SoundIoOutStream *outstream,
             break;
 
         for (int frame = 0; frame < frame_count; frame += 1) {
-            for (int channel = 0; channel < layout->channel_count; channel += 1) {
+            for (int channel = 0; channel < channels; channel += 1) {
                 
                 short *ptr = (short*)(areas[channel].ptr + areas[channel].step * frame);
                 
@@ -62,8 +79,9 @@ static void write_callback(struct SoundIoOutStream *outstream,
             }
         }
 
-        // hard coded: 2 channels
-        pos += 2*frame_count;
+
+        // update position buffer with the amount of frames played
+        pos += channels * frame_count;
 
         double time_sec = (double) pos / 2.0 / 44100.0;
         printf("pos = %lu, time_est = %.3lf\n", pos, time_sec);
@@ -114,7 +132,7 @@ int main(int argc, char **argv) {
 
     
     // pre load WAV data into a buffer
-    const char *fname = "beautiful1.wav";
+    const char *fname = "pattern.wav";
     file = SndfileHandle (fname);
 
     printf ("Opened file '%s'\n", fname) ;
@@ -123,8 +141,8 @@ int main(int argc, char **argv) {
     printf ("    Frames      : %lu\n", file.frames ()) ;
     const int bytes_per_sample = 2;
 
-    int buf_size = file.frames() * file.channels() * bytes_per_sample;
-    printf("buffer size: %d\n", buf_size);
+    buf_size = file.frames() * file.channels() * bytes_per_sample;
+    printf("buffer size: %zu\n", buf_size);
 
     buffer = (short*) malloc (buf_size);
     sf_count_t n_read = file.readRaw (buffer, buf_size);
