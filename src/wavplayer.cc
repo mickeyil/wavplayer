@@ -1,7 +1,5 @@
-// build with: g++ -Wall -o wp6 wp6.cc -lsoundio -lsndfile
-// install packages (Ubuntu 16.04):
-// $ sudo apt-get install libsndfile1-dev libsoundio-dev libasound2-dev
-
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <soundio/soundio.h>
 
@@ -40,7 +38,7 @@ size_t buf_size = 0;
 
 SndfileHandle file;
 
-
+const char * input_filename = nullptr;
 
 static void write_callback(struct SoundIoOutStream *outstream,
         int frame_count_min, int frame_count_max)
@@ -53,7 +51,7 @@ static void write_callback(struct SoundIoOutStream *outstream,
 
     int channels = layout->channel_count;
 
-    if (pos + channels * frames_left > buf_size) {
+    if (2*(pos + channels * frames_left) >= buf_size) {
       printf("LOOP!");
       pos = 0;
     }
@@ -96,6 +94,14 @@ static void write_callback(struct SoundIoOutStream *outstream,
 }
 
 int main(int argc, char **argv) {
+
+		if (argc <= 1) {
+        printf("Usage: %s file.wav\n", argv[0]);
+        exit(1);
+    }
+    input_filename = argv[1];
+    printf("playing: %s\n", input_filename);
+
     int err;
     struct SoundIo *soundio = soundio_create();
     if (!soundio) {
@@ -132,10 +138,9 @@ int main(int argc, char **argv) {
 
     
     // pre load WAV data into a buffer
-    const char *fname = "pattern.wav";
-    file = SndfileHandle (fname);
+    file = SndfileHandle (input_filename);
 
-    printf ("Opened file '%s'\n", fname) ;
+    printf ("Opened file '%s'\n", input_filename) ;
     printf ("    Sample rate : %d\n", file.samplerate ()) ;
     printf ("    Channels    : %d\n", file.channels ()) ;
     printf ("    Frames      : %lu\n", file.frames ()) ;
