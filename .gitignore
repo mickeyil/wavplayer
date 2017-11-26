@@ -1,0 +1,9 @@
+# ignore vi .swp files
+*.swp
+
+# ignore object and binary dirs
+bin/*
+obj/*
+
+# ignore wav files used for testing
+*.wav
