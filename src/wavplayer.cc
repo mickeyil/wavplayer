@@ -34,11 +34,27 @@ short *buffer = NULL;
 // global position uint16 pointer
 size_t pos = 0;
 
+// position in frames
+size_t frame_pos = 0;
+
 size_t buf_size = 0;
 
 SndfileHandle file;
 
 const char * input_filename = nullptr;
+
+// to detect play time, current frame_count_max and the previous one are
+// compared. When they are not equal the first time, playtime is about
+// frame_pos * sample_rate with some uncertainty that can be influenced by
+// MAX_FRAMES_QUANTA size.
+int curr_fcmax = -1;
+int prev_fcmax = -1;
+
+// estimated true position by tracing buffer consumption according to
+// frame_count_max
+int est_true_pos = 0;
+
+
 
 static void write_callback(struct SoundIoOutStream *outstream,
         int frame_count_min, int frame_count_max)
@@ -51,9 +67,18 @@ static void write_callback(struct SoundIoOutStream *outstream,
 
     int channels = layout->channel_count;
 
+    prev_fcmax = curr_fcmax;
+    curr_fcmax = frame_count_max;
+
+    if (curr_fcmax > prev_fcmax && prev_fcmax > 0) {
+      est_true_pos += curr_fcmax - prev_fcmax;
+    }
+
     if (2*(pos + channels * frames_left) >= buf_size) {
-      printf("LOOP!");
+      printf("------------------------LOOP!------------------------\n");
       pos = 0;
+      frame_pos = 0;
+      est_true_pos = curr_fcmax - prev_fcmax;
     }
 
     while (frames_left > 0) {
@@ -66,7 +91,8 @@ static void write_callback(struct SoundIoOutStream *outstream,
 
         if (!frame_count)
             break;
-
+        
+        printf("copying %d number of frames. (%d left)\n", frame_count, frame_count_max);
         for (int frame = 0; frame < frame_count; frame += 1) {
             for (int channel = 0; channel < channels; channel += 1) {
                 
@@ -80,9 +106,13 @@ static void write_callback(struct SoundIoOutStream *outstream,
 
         // update position buffer with the amount of frames played
         pos += channels * frame_count;
+        frame_pos += frame_count;
 
-        double time_sec = (double) pos / 2.0 / 44100.0;
-        printf("pos = %lu, time_est = %.3lf\n", pos, time_sec);
+        double time_sec  = (double) pos / 2.0    / 44100.0;
+        double time_sec2 = (double) est_true_pos / 44100.0;
+
+        printf("frame pos = %lu, time_est = %.3lf, time_est2 = %.3lf\n", frame_pos, 
+            time_sec, time_sec2);
 
         if ((err = soundio_outstream_end_write(outstream))) {
             fprintf(stderr, "%s\n", soundio_strerror(err));
