@@ -50,6 +50,8 @@ const char * input_filename = nullptr;
 int curr_fcmax = -1;
 int prev_fcmax = -1;
 
+int frames_baseline = -1;
+
 // estimated true position by tracing buffer consumption according to
 // frame_count_max
 int est_true_pos = 0;
@@ -62,20 +64,26 @@ static void write_callback(struct SoundIoOutStream *outstream,
     const struct SoundIoChannelLayout *layout = &outstream->layout;
     struct SoundIoChannelArea *areas;
     int frames_left = frame_count_max;
-    frames_left = std::min(frames_left, MAX_FRAMES_QUANTA);
+    // frames_left = std::min(frames_left, MAX_FRAMES_QUANTA);
     int err;
 
     int channels = layout->channel_count;
 
-    prev_fcmax = curr_fcmax;
-    curr_fcmax = frame_count_max;
+    // prev_fcmax = curr_fcmax;
+    // curr_fcmax = frame_count_max;
 
-    if (curr_fcmax > prev_fcmax && prev_fcmax > 0) {
-      est_true_pos += curr_fcmax - prev_fcmax;
+    // if (curr_fcmax > prev_fcmax && prev_fcmax > 0) {
+    //   est_true_pos += curr_fcmax - prev_fcmax;
+    // }
+    if (frames_baseline < 0) {
+      frames_baseline = frame_count_max;
+      est_true_pos = 0;
+    } else {
+      est_true_pos += frame_count_max;
     }
 
     if (2*(pos + channels * frames_left) >= buf_size) {
-      printf("------------------------LOOP!------------------------\n");
+      printf("\n------------------------LOOP!------------------------\n");
       pos = 0;
       frame_pos = 0;
       est_true_pos = curr_fcmax - prev_fcmax;
@@ -92,7 +100,6 @@ static void write_callback(struct SoundIoOutStream *outstream,
         if (!frame_count)
             break;
         
-        printf("copying %d number of frames. (%d left)\n", frame_count, frame_count_max);
         for (int frame = 0; frame < frame_count; frame += 1) {
             for (int channel = 0; channel < channels; channel += 1) {
                 
@@ -111,8 +118,8 @@ static void write_callback(struct SoundIoOutStream *outstream,
         double time_sec  = (double) pos / 2.0    / 44100.0;
         double time_sec2 = (double) est_true_pos / 44100.0;
 
-        printf("frame pos = %lu, time_est = %.3lf, time_est2 = %.3lf\n", frame_pos, 
-            time_sec, time_sec2);
+        printf("copied %d frames [max_count: %d] -- frame_pos = %zu, time1 = %.3lf, time2 = %.3lf      \r",
+            frame_count, frame_count_max, frame_pos, time_sec, time_sec2);
 
         if ((err = soundio_outstream_end_write(outstream))) {
             fprintf(stderr, "%s\n", soundio_strerror(err));
@@ -125,6 +132,7 @@ static void write_callback(struct SoundIoOutStream *outstream,
 
 int main(int argc, char **argv) {
 
+    setbuf(stdout, NULL);
 		if (argc <= 1) {
         printf("Usage: %s file.wav\n", argv[0]);
         exit(1);
@@ -173,7 +181,7 @@ int main(int argc, char **argv) {
     printf ("Opened file '%s'\n", input_filename) ;
     printf ("    Sample rate : %d\n", file.samplerate ()) ;
     printf ("    Channels    : %d\n", file.channels ()) ;
-    printf ("    Frames      : %lu\n", file.frames ()) ;
+    printf ("    Frames      : %llu\n", file.frames ()) ;
     const int bytes_per_sample = 2;
 
     buf_size = file.frames() * file.channels() * bytes_per_sample;
@@ -181,7 +189,7 @@ int main(int argc, char **argv) {
 
     buffer = (short*) malloc (buf_size);
     sf_count_t n_read = file.readRaw (buffer, buf_size);
-    printf("n_read = %lu\n", n_read);
+    printf("n_read = %llu\n", n_read);
 
     outstream->format = SoundIoFormatS16LE;
     outstream->sample_rate = 44100;
