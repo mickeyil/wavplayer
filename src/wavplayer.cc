@@ -1,22 +1,15 @@
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <cstring>
+#include <cmath>
+#include <ctime>
+
 #include <soundio/soundio.h>
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-
 #include	<sndfile.hh>
 
-// this argument controls the number of frames that are copied each time
-// the write callback function is called.
-// larger number copies more frames thus creates more robustness against
-// operating system caused delays, but gives less certainty on the exact
-// play time. Smaller number increases the certainty at the expense of
-// risking exposure to buffer underrun.
-static const int MAX_FRAMES_QUANTA = 800;
+void sleep_ms(int milliseconds);
 
 
 // This pointer holds the buffer which will contain the whole
@@ -31,66 +24,77 @@ static const int MAX_FRAMES_QUANTA = 800;
 
 short *buffer = NULL;
 
-// global position uint16 pointer
+// global position uint16 pointer for input data buffer
 size_t pos = 0;
 
-// position in frames
-size_t frame_pos = 0;
+// number of frames already copied to the sound buffer
+int frames_copied = 0;
 
-size_t buf_size = 0;
+// total number of frames for playback
+int playback_frames = 0;
 
-SndfileHandle file;
-
-const char * input_filename = nullptr;
-
-// to detect play time, current frame_count_max and the previous one are
-// compared. When they are not equal the first time, playtime is about
-// frame_pos * sample_rate with some uncertainty that can be influenced by
-// MAX_FRAMES_QUANTA size.
-int curr_fcmax = -1;
-int prev_fcmax = -1;
-
-int frames_baseline = -1;
-
-// estimated true position by tracing buffer consumption according to
-// frame_count_max
-int est_true_pos = 0;
+// signals that the sound buffer is empty - nothing to playback
+static volatile bool done_playing = false;
 
 
+static void underflow_callback(struct SoundIoOutStream *outstream) {
+    static int count = 0;
+    fprintf(stderr, "underflow %d\n", count++);
+
+    int frames_remaining = playback_frames - frames_copied;
+    if (frames_remaining == 0) {
+        done_playing = true;
+    } else {
+      fprintf(stderr, "read underrun occured!!\n");
+      exit(1);
+    }
+    printf("exit underflow callback\n");
+}
 
 static void write_callback(struct SoundIoOutStream *outstream,
         int frame_count_min, int frame_count_max)
 {
     const struct SoundIoChannelLayout *layout = &outstream->layout;
+    const int channels = layout->channel_count;
     struct SoundIoChannelArea *areas;
-    int frames_left = frame_count_max;
-    // frames_left = std::min(frames_left, MAX_FRAMES_QUANTA);
+
+    if (done_playing) {
+      printf("done playing. returning from callback.\n");
+      return;
+    }
+
+    double next_frame_latency = 0.0;
     int err;
-
-    int channels = layout->channel_count;
-
-    // prev_fcmax = curr_fcmax;
-    // curr_fcmax = frame_count_max;
-
-    // if (curr_fcmax > prev_fcmax && prev_fcmax > 0) {
-    //   est_true_pos += curr_fcmax - prev_fcmax;
-    // }
-    if (frames_baseline < 0) {
-      frames_baseline = frame_count_max;
-      est_true_pos = 0;
-    } else {
-      est_true_pos += frame_count_max;
+    printf("query latency\n");
+    if ((err = soundio_outstream_get_latency(outstream, &next_frame_latency))) {
+        fprintf(stderr, "%s\n", soundio_strerror(err));
+        exit(1);
     }
 
-    if (2*(pos + channels * frames_left) >= buf_size) {
-      printf("\n------------------------LOOP!------------------------\n");
-      pos = 0;
-      frame_pos = 0;
-      est_true_pos = curr_fcmax - prev_fcmax;
+    double playtime = frames_copied / 44100.0 - next_frame_latency;
+
+    printf("frames copied: %d, playtime: %.3lf, next frame latency: %.3lf, frame_count_max: %d\n", 
+      frames_copied, playtime, next_frame_latency, frame_count_max);
+    
+    int frames_remaining = playback_frames - frames_copied;
+
+    if (frames_remaining == 0 && next_frame_latency == 0.0) {
+      printf("** done playing (write callback) **\n");
+         fprintf(stderr, "pausing result: %s\n",
+         soundio_strerror(soundio_outstream_pause(outstream, true)));
+         done_playing = true;
     }
 
-    while (frames_left > 0) {
-        int frame_count = frames_left;
+    int frames_to_copy = std::min(frames_remaining, frame_count_max);
+    
+    if (frames_to_copy <= 0) {
+      printf("no more data. frames_to_copy = %d\n", frames_to_copy);
+      return;
+    }
+
+
+    while (frames_to_copy > 0) {
+        int frame_count = frames_to_copy;
 
         if ((err = soundio_outstream_begin_write(outstream, &areas, &frame_count))) {
             fprintf(stderr, "%s\n", soundio_strerror(err));
@@ -111,24 +115,20 @@ static void write_callback(struct SoundIoOutStream *outstream,
         }
 
 
-        // update position buffer with the amount of frames played
-        pos += channels * frame_count;
-        frame_pos += frame_count;
-
-        double time_sec  = (double) pos / 2.0    / 44100.0;
-        double time_sec2 = (double) est_true_pos / 44100.0;
-
-        printf("copied %d frames [max_count: %d] -- frame_pos = %zu, time1 = %.3lf, time2 = %.3lf      \r",
-            frame_count, frame_count_max, frame_pos, time_sec, time_sec2);
-
         if ((err = soundio_outstream_end_write(outstream))) {
             fprintf(stderr, "%s\n", soundio_strerror(err));
             exit(1);
         }
 
-        frames_left -= frame_count;
+        // update position buffer with the amount of frames played
+        pos += channels * frame_count;
+
+        frames_copied += frame_count;
+        frames_to_copy -= frame_count;
     }
 }
+
+
 
 int main(int argc, char **argv) {
 
@@ -137,7 +137,8 @@ int main(int argc, char **argv) {
         printf("Usage: %s file.wav\n", argv[0]);
         exit(1);
     }
-    input_filename = argv[1];
+
+    const char * input_filename = argv[1];
     printf("playing: %s\n", input_filename);
 
     int err;
@@ -151,6 +152,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "error connecting: %s\n", soundio_strerror(err));
         return 1;
     }
+
+    fprintf(stderr, "Backend: %s\n", soundio_backend_name(soundio->current_backend));
 
     soundio_flush_events(soundio);
 
@@ -176,24 +179,27 @@ int main(int argc, char **argv) {
 
     
     // pre load WAV data into a buffer
-    file = SndfileHandle (input_filename);
-
+    SndfileHandle file = SndfileHandle (input_filename);
+					
+    playback_frames = file.frames();
+    
     printf ("Opened file '%s'\n", input_filename) ;
     printf ("    Sample rate : %d\n", file.samplerate ()) ;
     printf ("    Channels    : %d\n", file.channels ()) ;
-    printf ("    Frames      : %llu\n", file.frames ()) ;
+    printf ("    Frames      : %lu\n", (uint64_t) file.frames ()) ;
     const int bytes_per_sample = 2;
 
-    buf_size = file.frames() * file.channels() * bytes_per_sample;
+    size_t buf_size = file.frames() * file.channels() * bytes_per_sample;
     printf("buffer size: %zu\n", buf_size);
 
     buffer = (short*) malloc (buf_size);
     sf_count_t n_read = file.readRaw (buffer, buf_size);
-    printf("n_read = %llu\n", n_read);
+    printf("n_read = %lu\n", (uint64_t) n_read);
 
     outstream->format = SoundIoFormatS16LE;
     outstream->sample_rate = 44100;
     outstream->write_callback = write_callback;
+    outstream->underflow_callback = underflow_callback;
 
     if ((err = soundio_outstream_open(outstream))) {
         fprintf(stderr, "unable to open device: %s", soundio_strerror(err));
@@ -208,13 +214,35 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    for (;;)
-        soundio_wait_events(soundio);
-
+    for (;;) {
+        soundio_flush_events(soundio);
+        sleep_ms(100);
+        printf("main loop\n");
+        if (done_playing) {
+          printf("done.\n");
+          break;
+        }
+    }
+    printf("calling outstream destroy\n");
     soundio_outstream_destroy(outstream);
+    printf("calling device unref\n");
     soundio_device_unref(device);
+    printf("calling destroy\n");
     soundio_destroy(soundio);
     free(buffer);
+    for (;;) {
+      printf("***\n");
+      sleep_ms(100);
+    }
     return 0;
 }
 
+
+
+void sleep_ms(int milliseconds)
+{
+  	struct timespec ts;
+  	ts.tv_sec = milliseconds / 1000;
+  	ts.tv_nsec = (milliseconds % 1000) * 1000000;
+  	nanosleep(&ts, NULL);
+}
